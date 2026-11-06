@@ -1,0 +1,115 @@
+name: Build Game
+
+on:
+  push:
+    branches:
+      - '**'
+      - '!master'
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows
+            runs-on: windows
+            lime-build-target: 'windows'
+            output: export/release/windows/bin/
+  
+          - target: macos
+            runs-on: macos
+            lime-build-target: 'macos'
+            output: export/release/macos/bin/
+
+          - target: linux
+            runs-on: ubuntu-latest
+            lime-build-target: 'linux'
+            output: export/release/linux/bin/
+
+          - target: html5
+            runs-on: ubuntu-latest
+            lime-build-target: ''
+            output: export/release/html5/bin/
+
+          - target: android
+            runs-on: ubuntu-latest
+            lime-build-target: 'android'
+            output: export/release/android/bin/app/build/**/*.apk
+
+    runs-on: ${{matrix.runs-on}}
+    steps:
+      - name: Checkout repository
+        uses: FunkinCrew/ci-checkout@main
+        with:
+          submodules: 'recursive'
+
+      - name: Setup Haxe
+        uses: FunkinCrew/ci-haxe@master
+        with:
+          haxe-version: 4.3.7
+
+      - name: Fetch HMM Cache
+        id: hmm-cache
+        uses: actions/cache@v6.1.0
+        with:
+          key: hmm-${{matrix.target}}-${{hashFiles('**/hmm.json')}}
+          path: .haxelib/
+          restore-keys: hmm-${{matrix.target}}
+
+      - name: Fetch Export Cache
+        uses: actions/cache@v6.1.0
+        with:
+          key: export-${{matrix.target}}-${{github.sha}}
+          path: export/
+          restore-keys: export-${{matrix.target}}
+
+      - if: ${{steps.hmm-cache.outputs.cache-hit != 'true'}}
+        name: Install hmm-rs
+        uses: baptiste0928/cargo-install@v3.5.0
+        with:
+          crate: hmm-rs
+          git: https://github.com/FunkinCrew/hmm-rs
+
+      - if: ${{steps.hmm-cache.outputs.cache-hit != 'true'}}
+        name: Download HMM Packages
+        run: hmm-rs install
+
+      - name: Install native dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          ls -lah /usr/lib/x86_64-linux-gnu/
+          apt-get update
+          apt-get install -y \
+            g++ \
+            libx11-dev libxi-dev libxext-dev libxinerama-dev libxrandr-dev \
+            libgl-dev libgl1-mesa-dev \
+            libasound2-dev libpulse-dev
+          ln -s /usr/lib/x86_64-linux-gnu/libffi.so.8 /usr/lib/x86_64-linux-gnu/libffi.so.6 || true
+
+      - name: Install Linux-specific dependencies
+        if: ${{ runner.os == 'Linux' && matrix.target == 'linux' }}
+        shell: bash
+        run: |
+          apt-get install -y libvlc-dev libvlccore-dev
+
+      - name: Build HXCPP Tools
+        run: |
+          cd .haxelib/hxcpp/git/tools/hxcpp
+          haxe compile.hxml
+          cd ../../../../..
+
+      - if: ${{matrix.lime-build-target != ''}}
+        name: Build Lime
+        run: haxelib run lime rebuild ${{matrix.lime-build-target}}
+
+      - name: Build the Game
+        run: haxelib run lime build ${{matrix.target}}
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-${{matrix.target}}
+          path: ${{matrix.output}}
